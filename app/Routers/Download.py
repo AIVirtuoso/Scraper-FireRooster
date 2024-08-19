@@ -5,7 +5,8 @@ import asyncio
 
 from app.Utils.download_audios import download  
 from app.Utils.whisper import stt_archive  
-import app.Utils.crud as crud  
+import app.Utils.crud as crud
+from app.Utils.categorize import all_subcategories
 from typing import AsyncGenerator  
 
 router = APIRouter()  
@@ -21,10 +22,11 @@ async def download_and_process(db: AsyncSession, purchased_scanner_id: int):
     # Call the STT processing function  
     await stt_archive(db, purchased_scanner_id, archive_list)  
 
-async def process_batches(semaphore, db, batch):  
-    # Create and run tasks within the semaphore  
+async def process_batches(db, batch):  
+    semaphore = asyncio.Semaphore(5)  
     tasks = [limited_concurrent_tasks(semaphore, db, scanner_id) for scanner_id in batch]  
-    await asyncio.gather(*tasks)  
+    await asyncio.gather(*tasks)
+
 
 async def limited_concurrent_tasks(semaphore, db, purchased_scanner_id):  
     async with semaphore:  
@@ -38,10 +40,21 @@ async def update_alerts_router(db: AsyncSession = Depends(get_db)):
         {purchased_scanner.scanner_id for purchased_scanner in purchased_scanner_list}  # Remove duplicates  
     )  
 
-    semaphore = asyncio.Semaphore(5)  
-
-    # Break the list into batches of 5  
     for i in range(0, len(purchased_scanner_id_list), 5):  
         batch = purchased_scanner_id_list[i:i+5]  
-        await process_batches(semaphore, db, batch)  
+        await process_batches(db, batch)  
 
+@router.get('/all-subcategories')  
+async def get_all_subcategories(db: AsyncSession = Depends(get_db)):
+    # alerts = await crud.remove_duplicate_audios_by_filename(db)
+    sub_categories = await all_subcategories(db)
+    # sub_categories = await crud.get_all_subcategories(db)
+    unique_sub_categories = {tuple(item.items()): item for item in sub_categories}.values()
+    
+    # Convert the unique items back to a list  
+    unique_list = list(unique_sub_categories)
+    
+    # Sort by "Category"  
+    sorted_list = sorted(unique_list, key=lambda x: x.get('category'))
+    
+    return sorted_list

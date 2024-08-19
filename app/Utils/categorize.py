@@ -1,25 +1,24 @@
 from openai import OpenAI, AsyncOpenAI
-import logging as log
+from sqlalchemy.ext.asyncio import AsyncSession  
 from sqlalchemy.ext.asyncio import AsyncSession  
 
 from dotenv import load_dotenv
 from database import AsyncSessionLocal
 
-import app.Utils.crud as crud
-from app.Utils.validate_address import validate_address
-from app.Utils.get_geocode_data import get_geocode_data, get_score_by_location_type
+
+from typing import AsyncGenerator  
 import json
 import re
-import datetime
-from typing import AsyncGenerator  
 
+import app.Utils.crud as crud
+from app.Utils.validate_address import validate_address
 load_dotenv()
 
 client = AsyncOpenAI()
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:  
     async with AsyncSessionLocal() as session:  
-        yield session  
+        yield session
 
 def extract_timestamp(name):
     # Extract the timestamp using regex
@@ -27,28 +26,6 @@ def extract_timestamp(name):
     if match:
         return int(match.group())
     return None
-
-def convert_timestamp_to_datetime(timestamp):
-    date_time = datetime.datetime.fromtimestamp(timestamp)  
-    return date_time.strftime('%Y-%m-%d %H:%M:%S')
-
-async def ai_translate(audio_file_path):
-    # model = whisper.load_model("medium.en")
-    # print(f"STT for {audio_file_path}")
-    # result = model.transcribe(audio_file_path, fp16=False)
-
-    # pprint(result)
-    # something not good here
-    # print(audio_file_path)
-    audio_file= open(audio_file_path, "rb")
-    transcription = await client.audio.transcriptions.create(
-        model="whisper-1", 
-        file=audio_file,
-        language="en"
-    )
-    
-    # print(f"STT DONE for {audio_file_path}")
-    return transcription.text
 
 def add_sub_category(sub_categories, category, text):
     for sub_category in sub_categories:
@@ -72,7 +49,6 @@ async def extract_subcategory(db, state, county, scanner_title, context):
     category_prompt += '4. Miscellaneous (MISC): \n'
     category_prompt = add_sub_category(sub_categories, "Miscellaneous (MISC)", category_prompt)
     
-    print(category_prompt)
 
     instruction = f"""
         Task: Generate a structured notification/report about an event based on an audio transcription containing various types of communication, including scanner communications, police dispatches, calls, and conversations in JSON format.
@@ -112,6 +88,9 @@ async def extract_subcategory(db, state, county, scanner_title, context):
         Scanner Title: {scanner_title}
     """
 
+    # print(instruction)
+
+
     response = await client.chat.completions.create(
         model='gpt-4o',
         max_tokens=4000,
@@ -133,7 +112,6 @@ async def extract_subcategory(db, state, county, scanner_title, context):
     # print("json_response: ", json_response)
     return json_response['alerts']
 
-        
 
 async def get_potential_addresses(state, county, scanner_title, address):
     try:
@@ -181,60 +159,47 @@ async def get_potential_addresses(state, county, scanner_title, address):
         print("get_potential_addresses--------------")
    
 
-async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):  
 
-    # Fetch the scanner by ID  
-    scanner = await crud.get_scanner_by_scanner_id(db, purchased_scanner_id)  
-    if not scanner:  
-        log.error(f"Scanner with id {purchased_scanner_id} not found.")  
-        return  
+async def all_subcategories(db: AsyncSession):
+    audios = await crud.get_all_audios(db)
+    audios = audios[0:2780]
+    for audio in audios:
+        # Fetch the scanner by ID  
+        scanner = await crud.get_scanner_by_scanner_id(db, audio.scanner_id)  
+        if not scanner:  
+            log.error(f"Scanner with id {audio.scanner_id} not found.")  
+            return
 
-    state = scanner.state_name  
-    county = scanner.county_name  
-    scanner_title = scanner.scanner_title  
-
-    for archive in archive_list:  
-        audio = await crud.get_audio_by_filename(db, archive['filename'])  
-        transcript = ""  
-        if audio and audio.context:  
-            transcript = audio.context
-            continue
-        else:  
-            try:  
-                transcript = await ai_translate(archive['filename'])  
-                timestamp = extract_timestamp(archive['filename'])  
-                dateTime = convert_timestamp_to_datetime(timestamp)  
-                await crud.insert_audio(db, archive['filename'], transcript, purchased_scanner_id, dateTime)  
-            except Exception as e:  
-                log.error(f"Failed to translate file {archive['filename']}: {e}")  
-                continue  
-    
-        alerts = await extract_subcategory(db, state, county, scanner_title, transcript)
-        print("alerts: ", alerts)
-        if alerts:
-            for event in alerts:
-                print('--------------------------')
-                try:
+        state = scanner.state_name  
+        county = scanner.county_name  
+        scanner_title = scanner.scanner_title
+        print('state: ', state)
+        print("scanner_title: ", scanner_title)
+        print("audio: ", audio.context)
+        print("audio.dateTime: ", audio.dateTime)
+        try:
+            alerts = await extract_subcategory(db, state, county, scanner_title, audio.context)
+            print("alerts: ", alerts)
+            if alerts:
+                for event in alerts:
+                    print('--------------------------')
                     print('event: ', event)
-                    timestamp = extract_timestamp(archive['filename'])  
-                    dateTime = convert_timestamp_to_datetime(timestamp)
-                    alert = await crud.insert_alert(db, purchased_scanner_id, event, dateTime)
+                    # timestamp = extract_timestamp(audio.dateTime)  
+                    # dateTime = convert_timestamp_to_datetime(timestamp)
+                    alert = await crud.insert_alert(db, audio.scanner_id, event, audio.dateTime)
                     await crud.insert_sub_category(db, event['category'], event['sub-category'])
 
                     if "incident_Address" in event:
-                        # addresses = await get_potential_addresses(state, county, scanner_title, event['incident_Address'])
-                        # results = validate_address(event['incident_Address'])
-                        formatted_addresses = get_geocode_data(event['incident_Address'])
-                        for result in formatted_addresses:
-                            formatted_address = result.get('formatted_address')
-                            score = get_score_by_location_type(result.get('geometry').get('location_type'))
-                            await crud.insert_validated_address(
-                                db,
-                                formatted_address,
-                                score,
-                                alert.id
-                            )
-                except Exception as e:
-                    print(e)
-                    
-                print('++++++++++++++++++++++++++++')
+                        addresses = await get_potential_addresses(state, county, scanner_title, event['incident_Address'])  
+                        results = validate_address(addresses)  
+                        sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)  
+                        print("sorted_results: ", sorted_results)
+                        
+                        for result in sorted_results[:3]:  
+                            await crud.insert_validated_address(db, result['address'], result['score'], alert.id)  
+                    print('++++++++++++++++++++++++++++')
+        except Exception as e:
+            print(e)
+
+
+            

@@ -57,6 +57,8 @@ class PurchasedScanner(Base):
 class Alert(Base):
     __tablename__ = "alert_table"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String)
+    sub_category = Column(String)
     headline = Column(String)
     description = Column(String)
     address = Column(String)
@@ -69,3 +71,9 @@ class Address(Base):
     address = Column(String)
     score = Column(Float)
     alert_id = Column(Integer)
+
+class Category(Base):
+    __tablename__ = "category_table"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String)
+    sub_category = Column(String)

@@ -117,13 +117,14 @@ async def parse_date_archive(feedId, date=datetime.datetime.now()):
         "action": action,  
         "redirect": redirect,  
     }  
-    s.post(  
-        login_url,  
-        data=payload,  
-        headers={  
-            "Content-Type": "application/x-www-form-urlencoded",  
-        },  
-    )  
+    s.post(
+        login_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    # print(s.cookies)
     # verify if this is successful  
     if s.cookies.get("bcfyuser1", default=None) is None:  
         print("Login failed")  
@@ -138,7 +139,7 @@ async def parse_date_archive(feedId, date=datetime.datetime.now()):
 
     if len(archive_list):
         # download full day archive  
-        archive_list = await download_archives_sync(s, archive_list[-1])  
+        archive_list = await download_archives_sync(s, archive_list[0])  
     
     return archive_list  
 

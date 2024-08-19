@@ -22,6 +22,13 @@ app.add_middleware(
 
 app.include_router(Download.router, prefix="/api/v1")
 
+
+
+@app.get("/check_db_connection")  
+async def check_db_connection():
+    from database import check_db_connection
+    return await check_db_connection()
+
 @app.get("/")
 async def health_checker():
     return {"status": "success-download"}
