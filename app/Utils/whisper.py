@@ -46,6 +46,7 @@ async def ai_translate(audio_file_path):
     # something not good here
     # print(audio_file_path)
     transcript = transcriber.transcribe(audio_file_path)
+    print(transcript.text)
     print(transcript.utterances)
 
     if transcript.status == aai.TranscriptStatus.error:
@@ -112,7 +113,7 @@ async def extract_subcategory(db, state, county, scanner_title, context):
                                 "sub-category": "<Sub-Category>", // Choose from given examples or create your own  
                                 "headline": "<Title of the event occurred>", // Include 'false' in the title if it's a false alarm  
                                 "description": "<Segment of Transcription>", // Provide relevant context  
-                                "incident_Address": "<Address of event occurred>" // Specify the location of the incident  
+                                "incident_Address": "<Address of event occurred>" // Specify the location of the incident. Extract standardized and structured address that contains county, city name.
                             }  
                         ]  
                     }  
@@ -125,6 +126,8 @@ async def extract_subcategory(db, state, county, scanner_title, context):
         State Name: {state}
         County Name: {county}
         Scanner Title: {scanner_title}
+        Extract and clearly state the formatted street address of the event from the provided text. Make sure the address is as standardized and structured as possible, ideally including street number, street name, city, state, and ZIP code. Don't forget to contain county name and state name.
+        Don't forget to contain county name and state name.
     """
 
     response = await client.chat.completions.create(

@@ -9,6 +9,7 @@ import logging as log
 import librosa
 import noisereduce as nr
 import requests
+import numpy as np
 import soundfile as sf
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
@@ -48,7 +49,18 @@ async def remove_silence_from_audio(audio_file_name, silence_thresh=-15, min_sil
     # # print(file_type)
 
     # Load the noise-reducced audio file
-    audio = AudioSegment.from_file(noise_reduced_filename, format="wav")
+    raw_audio, sr = librosa.load(noise_reduced_filename, sr=None)
+    current_rms = np.sqrt(np.mean(raw_audio**2))
+    target_rms = 0.1
+    gain = target_rms / current_rms
+    normalized_audio = raw_audio * gain
+    audio_buffer = io.BytesIO()
+    sf.write(audio_buffer, normalized_audio, sr, format='WAV')
+    audio_buffer.seek(0)
+
+    audio = AudioSegment.from_file(audio_buffer, format="wav")
+    # raw_audio = AudioSegment.from_file(noise_reduced_filename, format="wav")
+    # audio = raw_audio.apply_gain(-raw_audio.max_dBFS + -1.0)
     ##################################
 
     # Detect the silent segments in the audio  
