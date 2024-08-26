@@ -40,9 +40,11 @@ async def update_alerts_router(db: AsyncSession = Depends(get_db)):
         {purchased_scanner.scanner_id for purchased_scanner in purchased_scanner_list}  # Remove duplicates  
     )  
 
-    for i in range(0, len(purchased_scanner_id_list), 5):  
-        batch = purchased_scanner_id_list[i:i+5]  
-        await process_batches(db, batch)  
+    await download_and_process(db, purchased_scanner_id_list[11])
+
+    # for i in range(0, len(purchased_scanner_id_list), 5):  
+    #     batch = purchased_scanner_id_list[i:i+5]  
+    #     await process_batches(db, batch)  
 
 @router.get('/all-subcategories')  
 async def get_all_subcategories(db: AsyncSession = Depends(get_db)):

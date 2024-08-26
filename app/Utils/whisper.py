@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dotenv import load_dotenv
 from database import AsyncSessionLocal
+import assemblyai as aai
 
 import app.Utils.crud as crud
 from app.Utils.validate_address import validate_address
@@ -16,8 +17,12 @@ from typing import AsyncGenerator
 load_dotenv()
 
 client = AsyncOpenAI()
+aai.settings.api_key = "cc1f8ebab99e4efd851e27e242652e5a"
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:  
+config = aai.TranscriptionConfig(speaker_labels=True)
+transcriber = aai.Transcriber(config=config)
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:  
         yield session  
 
@@ -40,15 +45,25 @@ async def ai_translate(audio_file_path):
     # pprint(result)
     # something not good here
     # print(audio_file_path)
-    audio_file= open(audio_file_path, "rb")
-    transcription = await client.audio.transcriptions.create(
-        model="whisper-1", 
-        file=audio_file,
-        language="en"
-    )
+    transcript = transcriber.transcribe(audio_file_path)
+    print(transcript.utterances)
+
+    if transcript.status == aai.TranscriptStatus.error:
+        print(transcript.error)
+
+    text_with_speaker = ''
+    for utt in transcript.utterances:
+        text_with_speaker += f"Speaker {utt.speaker}:\n{utt.text}\n"
+
+    # audio_file= open(audio_file_path, "rb")
+    # transcription = await client.audio.transcriptions.create(
+    #     model="whisper-1", 
+    #     file=audio_file,
+    #     language="en"
+    # )
     
     # print(f"STT DONE for {audio_file_path}")
-    return transcription.text
+    return text_with_speaker
 
 def add_sub_category(sub_categories, category, text):
     for sub_category in sub_categories:
@@ -133,7 +148,6 @@ async def extract_subcategory(db, state, county, scanner_title, context):
     # print("json_response: ", json_response)
     return json_response['alerts']
 
-        
 
 async def get_potential_addresses(state, county, scanner_title, address):
     try:
@@ -201,7 +215,8 @@ async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):
             continue
         else:  
             try:  
-                transcript = await ai_translate(archive['filename'])  
+                transcript = await ai_translate(archive['filename'])
+                print("transcript: ", transcript)
                 timestamp = extract_timestamp(archive['filename'])  
                 dateTime = convert_timestamp_to_datetime(timestamp)  
                 await crud.insert_audio(db, archive['filename'], transcript, purchased_scanner_id, dateTime)  

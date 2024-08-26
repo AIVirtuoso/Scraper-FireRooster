@@ -12,6 +12,7 @@ import requests
 import soundfile as sf
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
+from pydub.silence import detect_silence
 
 TEMP_FOLDER = "audios"
 
@@ -50,36 +51,50 @@ async def remove_silence_from_audio(audio_file_name, silence_thresh=-15, min_sil
     audio = AudioSegment.from_file(noise_reduced_filename, format="wav")
     ##################################
 
-    # temp_folder_name = "temp_audio"
-    # temp_file_name = f"{file}.wav"
-    # temp_file_path = os.path.join(temp_folder_name, temp_file_name)
-    # # print("file", file)
-
-    # audio = AudioSegment.from_file(temp_file_path, format="wav")
-
-    # Split the audio on silence
-    audio_chunks = split_on_silence(
-        audio,
-        min_silence_len=min_silence_len,  # minimum length of silence to be considered as a break
-        silence_thresh=silence_thresh,  # silence threshold
-        seek_step=10,  # step size for iterating over the audio
-    )
-
-    # Combine non-silent audio chunks
+    # Detect the silent segments in the audio  
+    silences = detect_silence(audio, min_silence_len=min_silence_len, silence_thresh=silence_thresh, seek_step=10)  
+    # Adjust detecting silence times (start and end) from milliseconds to seconds  
+    silences = [(start / 1000, stop / 1000) for start, stop in silences]  
+    
+    current_stop = 0.0
     combined_audio = AudioSegment.empty()
-    for i, chunk in enumerate(audio_chunks):
+
+    for start, stop in silences:
+        start_ms = int(current_stop)  
+        end_ms = int(start * 1000) 
+        
+        chunk = audio[start_ms: end_ms]
         combined_audio += chunk
+        
+        print("stop, start: ", stop, start)
+        if stop - start > 2:
+            delta = stop - start
+            print("delta 1: ", delta)
+            delta = int(2 + (delta-2) // 5 * 5)
+            print("delta 2: ", delta)
+            if delta > 60:
+                combined_audio += AudioSegment.from_file("./audios/output.mp3", format="mp3")
+            else:
+                combined_audio += AudioSegment.from_file(f"./audios/output_{delta}.mp3", format="mp3")
+        
+        print(f"  Start time: {current_stop / 1000:.2f} seconds")
+        print(f"  End time: {start:.2f} seconds")
+        print(f"  Duration: {len(chunk) / 1000:.2f} seconds")
+        current_stop = stop * 1000
+        
+        print(len(chunk))
+        
+    if current_stop < len(audio):
+        combined_audio += audio[current_stop:]
 
     print("===== Processing audio file =====")
+    
     output_filename = audio_file_name.rsplit(".", 1)[0] + "_p.mp3"  # processed
-    # Export the processed audio
     combined_audio.export(output_filename, format="mp3")
     
     
-    os.remove(noise_reduced_filename)
+    # os.remove(audio_file_name)
     print("===== Deleted _nc.wav file =====")
-    
-    
     print("===== Finished processing audio file =====")
     
     return output_filename
