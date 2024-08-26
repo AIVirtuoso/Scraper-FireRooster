@@ -85,9 +85,9 @@ async def remove_silence_from_audio(audio_file_name, silence_thresh=-15, min_sil
             delta = int(2 + (delta-2) // 5 * 5)
             print("delta 2: ", delta)
             if delta > 60:
-                combined_audio += AudioSegment.from_file("./audios/output.mp3", format="mp3")
+                combined_audio += AudioSegment.from_file("./silence_audios/output.mp3", format="mp3")
             else:
-                combined_audio += AudioSegment.from_file(f"./audios/output_{delta}.mp3", format="mp3")
+                combined_audio += AudioSegment.from_file(f"./silence_audios/output_{delta}.mp3", format="mp3")
         
         print(f"  Start time: {current_stop / 1000:.2f} seconds")
         print(f"  End time: {start:.2f} seconds")
