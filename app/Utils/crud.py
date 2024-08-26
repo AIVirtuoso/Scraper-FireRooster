@@ -67,7 +67,7 @@ async def insert_audio(db: AsyncSession, audio, context, scanner_id, dateTime):
         new_audio = Audio(file_name=audio, context=context, scanner_id=scanner_id, dateTime=dateTime)
         db.add(new_audio)
         await db.flush()  # ensure flush and obtain primary key value  
-        await db.commit()  
+        await db.commit()
         await db.refresh(new_audio)
         return new_audio
         
