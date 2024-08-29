@@ -33,6 +33,7 @@ class Audio(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     file_name = Column(String)
     context = Column(String)
+    cleared_context = Column(String)
     scanner_id = Column(Integer)
     dateTime = Column(DateTime)
 

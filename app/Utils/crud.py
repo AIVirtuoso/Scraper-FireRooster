@@ -58,13 +58,13 @@ async def remove_duplicate_audios_by_filename(db:AsyncSession):
     return "Duplicates removed successfully"
 
 
-async def insert_audio(db: AsyncSession, audio, context, scanner_id, dateTime):
+async def insert_audio(db: AsyncSession, audio, context, cleared_conversation, scanner_id, dateTime):
     stmt = select(Audio).filter(Audio.file_name == audio)
     result = await db.execute(stmt)
     data = result.scalar_one_or_none()
     print(data)
     if not data:
-        new_audio = Audio(file_name=audio, context=context, scanner_id=scanner_id, dateTime=dateTime)
+        new_audio = Audio(file_name=audio, context=context, cleared_context=cleared_conversation, scanner_id=scanner_id, dateTime=dateTime)
         db.add(new_audio)
         await db.flush()  # ensure flush and obtain primary key value  
         await db.commit()

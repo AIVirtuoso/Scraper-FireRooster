@@ -56,15 +56,27 @@ async def ai_translate(audio_file_path):
     for utt in transcript.utterances:
         text_with_speaker += f"Speaker {utt.speaker}:\n{utt.text}\n"
 
-    # audio_file= open(audio_file_path, "rb")
-    # transcription = await client.audio.transcriptions.create(
-    #     model="whisper-1", 
-    #     file=audio_file,
-    #     language="en"
-    # )
-    
-    # print(f"STT DONE for {audio_file_path}")
-    return text_with_speaker
+    cleared_conversation = await client.chat.completions.create(
+        model='gpt-4o',
+        max_tokens=4000,
+        messages=[
+            {'role': 'system', 'content': """
+                In the given transcript, some talks like 'silence of xx seconds', 'silence of more than 1 minute' are system audio.
+                So that shouldn't be contained in the context.
+                While keeping all context and speaker labels, please remove only that kinds of silence-sentences.
+                Provide structured accurate conversation but don't change the context.
+            """},
+            {'role': 'user', 'content': f"""
+                Transcript:
+                {text_with_speaker}
+            """}
+        ],
+        seed=2425,
+        temperature = 0.7,
+        response_format={"type": "json_object"}
+    )
+
+    return text_with_speaker, cleared_conversation
 
 def add_sub_category(sub_categories, category, text):
     for sub_category in sub_categories:
@@ -126,7 +138,10 @@ async def extract_subcategory(db, state, county, scanner_title, context):
         State Name: {state}
         County Name: {county}
         Scanner Title: {scanner_title}
-        Extract and clearly state the formatted street address of the event from the provided text. Make sure the address is as standardized and structured as possible, ideally including street number, street name, city, state, and ZIP code. Don't forget to contain county name and state name.
+        Extract and clearly state the formatted street address of the event from the provided text.
+        From above Scanner Title, you can also get important information about city or county name.
+        Don't guess the address but based on above given State, County, City names and the info mentioned in inputted transcript.
+        Make sure the address is as standardized and structured as possible, ideally including street number, street name, city, county, state, and ZIP code. 
         Don't forget to contain county name and state name.
     """
 
@@ -137,7 +152,7 @@ async def extract_subcategory(db, state, county, scanner_title, context):
             {'role': 'system', 'content': instruction},
             {'role': 'user', 'content': f"""
                 Now, please categorize the following transcription:
-                Transcription:
+                Transcript:
                 {context}
             """}
         ],
@@ -218,11 +233,11 @@ async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):
             continue
         else:  
             try:  
-                transcript = await ai_translate(archive['filename'])
+                transcript, cleared_conversation = await ai_translate(archive['filename'])
                 print("transcript: ", transcript)
                 timestamp = extract_timestamp(archive['filename'])  
                 dateTime = convert_timestamp_to_datetime(timestamp)  
-                await crud.insert_audio(db, archive['filename'], transcript, purchased_scanner_id, dateTime)  
+                await crud.insert_audio(db, archive['filename'], transcript, cleared_conversation, purchased_scanner_id, dateTime)  
             except Exception as e:  
                 log.error(f"Failed to translate file {archive['filename']}: {e}")  
                 continue  
