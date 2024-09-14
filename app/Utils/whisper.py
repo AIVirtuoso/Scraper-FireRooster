@@ -9,15 +9,17 @@ import assemblyai as aai
 import app.Utils.crud as crud
 from app.Utils.validate_address import validate_address
 from app.Utils.get_geocode_data import get_geocode_data, get_score_by_location_type
+from app.Utils.spokeo import run_scraper
 import json
 import re
 import datetime
 from typing import AsyncGenerator  
+import os
 
 load_dotenv()
 
 client = AsyncOpenAI()
-aai.settings.api_key = "cc1f8ebab99e4efd851e27e242652e5a"
+aai.settings.api_key = os.getenv('ASSEMBLY_API_KEY')
 
 config = aai.TranscriptionConfig(speaker_labels=True)
 transcriber = aai.Transcriber(config=config)
@@ -46,8 +48,8 @@ async def ai_translate(audio_file_path):
     # something not good here
     # print(audio_file_path)
     transcript = transcriber.transcribe(audio_file_path)
-    print(transcript.text)
-    print(transcript.utterances)
+    # print(transcript.text)
+    # print(transcript.utterances)
 
     if transcript.status == aai.TranscriptStatus.error:
         print(transcript.error)
@@ -56,7 +58,7 @@ async def ai_translate(audio_file_path):
     for utt in transcript.utterances:
         text_with_speaker += f"Speaker {utt.speaker}:\n{utt.text}\n"
 
-    cleared_conversation = await client.chat.completions.create(
+    response = await client.chat.completions.create(
         model='gpt-4o',
         max_tokens=4000,
         messages=[
@@ -72,9 +74,9 @@ async def ai_translate(audio_file_path):
             """}
         ],
         seed=2425,
-        temperature = 0.7,
-        response_format={"type": "json_object"}
+        temperature = 0.7
     )
+    cleared_conversation = response.choices[0].message.content
 
     return text_with_speaker, cleared_conversation
 
@@ -100,7 +102,7 @@ async def extract_subcategory(db, state, county, scanner_title, context):
     category_prompt += '4. Miscellaneous (MISC): \n'
     category_prompt = add_sub_category(sub_categories, "Miscellaneous (MISC)", category_prompt)
     
-    print(category_prompt)
+    # print(category_prompt)
 
     instruction = f"""
         Task: Generate a structured notification/report about an event based on an audio transcription containing various types of communication, including scanner communications, police dispatches, calls, and conversations in JSON format.
@@ -235,12 +237,13 @@ async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):
             try:  
                 transcript, cleared_conversation = await ai_translate(archive['filename'])
                 print("transcript: ", transcript)
+                print("cleared_conversation: ", cleared_conversation)
                 timestamp = extract_timestamp(archive['filename'])  
                 dateTime = convert_timestamp_to_datetime(timestamp)  
                 await crud.insert_audio(db, archive['filename'], transcript, cleared_conversation, purchased_scanner_id, dateTime)  
             except Exception as e:  
                 log.error(f"Failed to translate file {archive['filename']}: {e}")  
-                continue  
+                continue
     
         alerts = await extract_subcategory(db, state, county, scanner_title, transcript)
         print("alerts: ", alerts)
@@ -261,11 +264,16 @@ async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):
                         for result in formatted_addresses:
                             formatted_address = result.get('formatted_address')
                             score = get_score_by_location_type(result.get('geometry').get('location_type'))
+                            contact_info = {}
+                            if score == 1:
+                                contact_info = await run_scraper(formatted_address)
+                                print("contact_info: ", contact_info)
                             await crud.insert_validated_address(
                                 db,
                                 formatted_address,
                                 score,
-                                alert.id
+                                alert.id,
+                                contact_info
                             )
                 except Exception as e:
                     print(e)

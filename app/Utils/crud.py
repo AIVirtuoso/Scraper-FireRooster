@@ -106,8 +106,8 @@ async def get_all_purchased_scanners(db: AsyncSession):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-async def insert_validated_address(db: AsyncSession, address, score, alert_id):
-    new_address = Address(address=address, score=score, alert_id=alert_id)
+async def insert_validated_address(db: AsyncSession, address, score, alert_id, contact_info):
+    new_address = Address(address=address, score=score, alert_id=alert_id, contact_info=contact_info)
     db.add(new_address)
     await db.commit()  
     await db.refresh(new_address)

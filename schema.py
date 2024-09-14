@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, ForeignKey, Boolean, Float, DateTime
+from sqlalchemy import Column, String, Integer, ForeignKey, Boolean, Float, DateTime, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -72,6 +72,7 @@ class Address(Base):
     address = Column(String)
     score = Column(Float)
     alert_id = Column(Integer)
+    contact_info = Column(JSON)
 
 class Category(Base):
     __tablename__ = "category_table"

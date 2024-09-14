@@ -17,7 +17,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def download_and_process(db: AsyncSession, purchased_scanner_id: int):
     archive_list = await download(purchased_scanner_id)
-    print(archive_list)  
+    print("archive_list: ", archive_list)  
 
     # Call the STT processing function  
     await stt_archive(db, purchased_scanner_id, archive_list)  
@@ -41,9 +41,11 @@ async def update_alerts_router(db: AsyncSession = Depends(get_db)):
     )  
     # await download_and_process(db, purchased_scanner_id_list[16])
 
-    for i in range(0, len(purchased_scanner_id_list), 5):  
-        batch = purchased_scanner_id_list[i:i+5]  
-        await process_batches(db, batch)  
+    # for i in range(0, len(purchased_scanner_id_list), 5):  
+    #     batch = purchased_scanner_id_list[i:i+5]  
+    #     await process_batches(db, batch)  
+    for i in range(0, len(purchased_scanner_id_list)):  
+        await download_and_process(db, purchased_scanner_id_list[i])  
 
 @router.get('/all-subcategories')  
 async def get_all_subcategories(db: AsyncSession = Depends(get_db)):
