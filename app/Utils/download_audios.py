@@ -2,9 +2,13 @@ import datetime
 import io  
 import os  
 import logging as log  
-import asyncio  
+import asyncio
+import aiohttp
 import requests  
+import json
 from pydub import AudioSegment  
+from app.Utils.whisper import stt_archive  
+
 from app.Utils.remove_space import process_audio  
 
 TEMP_FOLDER = "audios"  
@@ -34,9 +38,22 @@ async def get_full_day_archives(session, feedId, date=None):
     url_date = format_datetime_for_url(date)  
     formatted_url = (  
         f"{feed_archive_url}?feedId={feedId}&date={url_date[0]}&_={url_date[1]}"  
-    )  
-    print("formatted_url: ", formatted_url)  
-    feed_archive = session.get(formatted_url).json()  
+    )
+
+    print("formatted_url: ", formatted_url)
+    async with session.get(formatted_url) as resp:
+        if resp.status != 200:
+            print(f"Failed to get feed archive, status code: {resp.status}")
+            return None
+        try:
+            text = await resp.text()  
+            feed_archive = json.loads(text) 
+        except Exception as e:
+            print(f"Failed to parse JSON: {e}")
+            text = await resp.text()
+            print(f"Response text: {text}")
+            return None
+
     audio_list = extract_ids_from_archive(feed_archive)  
     return audio_list  
 
@@ -53,21 +70,26 @@ async def save_and_convert_to_wav(file_stream, file_name):
         print("yes")  
         return file_path  
 
-    with open(file_name + ".mp3", "wb") as file:  
-        file.write(file_stream.read())  
+    def blocking_operations():
 
-    # convert MP3 to WAV  
-    audio = AudioSegment.from_mp3(file_name + ".mp3")  
-    
-    audio_file_name = os.path.join(TEMP_FOLDER, file_name + ".wav")  
-    audio.export(audio_file_name, format="wav")  
-    delete_temp_mp3(file_name)  
+        with open(file_name + ".mp3", "wb") as file:  
+            file.write(file_stream.read())  
 
+        # convert MP3 to WAV  
+        audio = AudioSegment.from_mp3(file_name + ".mp3")
+        
+        audio_file_name = os.path.join(TEMP_FOLDER, file_name + ".wav")  
+        audio.export(audio_file_name, format="wav")  
+        delete_temp_mp3(file_name)  
+        return audio_file_name
+
+        
+    audio_file_name = await asyncio.to_thread(blocking_operations)
     print("audio_file_name: ", audio_file_name)  
     
     print("removing noizies ")  
     audio_file_name = await process_audio(audio_file_name)  
-    
+        
     return audio_file_name  
 
 
@@ -80,74 +102,64 @@ async def download_single_archive(archive, session):
     base_url = "https://www.broadcastify.com"  
     try:  
         archive_id = archive['id']  
-        response = session.get(  
-            f"{base_url}/archives/downloadv2/{archive_id}"  
-        )  # download the mp3 file  
+        async with session.get(f"{base_url}/archives/downloadv2/{archive_id}") as resp:
+            content = await resp.read()
         filename = await save_and_convert_to_wav(  
-            io.BytesIO(response.content), archive_id  
-        )  # save and convert to wav, run the coroutine  
-        archive['filename'] = filename  
-        return archive  
-    except Exception as e:  
+            io.BytesIO(content), archive_id  
+        )
+
+        archive['filename'] = filename
+        return archive
+    except Exception as e:
         print(e)  
         return None  
 
 
 async def download_archives_sync(session, archive):  
-    result = []
-    result_task = await download_single_archive(archive, session)   
-    if result_task:  
-        result.append(result_task)  
-    return result  
+    return await download_single_archive(archive, session)   
 
 
-async def parse_date_archive(feedId, date=datetime.datetime.now()):  
+async def parse_date_archive(session, feedId, date=datetime.datetime.now()):  
     username = "alertai"  
     password = "Var+(n42421799)"  
     action = "auth"  
     redirect = "https://www.broadcastify.com/"  
     
-    s = requests.Session()  
+    async with session.post(  
+        "https://www.broadcastify.com/login/",  
+        data={  
+            "username": username,  
+            "password": password,  
+            "action": action,  
+            "redirect": redirect,  
+        },  
+        headers={"Content-Type": "application/x-www-form-urlencoded"},  
+    ) as resp:  
+        await resp.text()  # Consume response to ensure request is processed
 
-    base_url = "https://www.broadcastify.com"  
-    login_url = "https://m.broadcastify.com/login/"  
-    payload = {  
-        "username": username,  
-        "password": password,  
-        "action": action,  
-        "redirect": redirect,  
-    }  
-    s.post(
-        login_url,
-        data=payload,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
-    # print(s.cookies)
-    # verify if this is successful  
-    if s.cookies.get("bcfyuser1", default=None) is None:  
+    if 'bcfyuser1' not in [cookie.key for cookie in session.cookie_jar]:  
         print("Login failed")  
         return  
-    print("Login successful")  
+
+    print("Login successful")
 
     archive_list = await get_full_day_archives(  
-        s,  
-        feedId=feedId,  
-        date=date,  
+        session,
+        feedId=feedId,
+        date=date,
     )
 
-    if len(archive_list):
-        # download full day archive  
-        archive_list = await download_archives_sync(s, archive_list[0])  
+    if archive_list and len(archive_list):
+        # download full day archive
+        archive_list = await download_archives_sync(session, archive_list[0])
     
     return archive_list  
 
 
-async def download(feedId):  
+async def download(db, feedId):  
     # parse last 10 days of data  
-    result = []  
-    for i in range(0, 1):
-        print("feedId: ", feedId)
-        result.extend(await parse_date_archive(feedId, datetime.datetime.now()))
-    return result
+    result = []
+    async with aiohttp.ClientSession() as session:  
+        print(f"Processing feedId: {feedId}")  
+        result = await parse_date_archive(session, feedId, datetime.datetime.now() - datetime.timedelta(days=0))
+        await stt_archive(db, feedId, result)

@@ -3,25 +3,32 @@ import logging as log
 from sqlalchemy.ext.asyncio import AsyncSession  
 
 from dotenv import load_dotenv
-from database import AsyncSessionLocal
 import assemblyai as aai
-
-import app.Utils.crud as crud
-from app.Utils.validate_address import validate_address
-from app.Utils.get_geocode_data import get_geocode_data, get_score_by_location_type
-from app.Utils.spokeo import run_scraper
 import json
 import re
 import datetime
 from typing import AsyncGenerator  
 import os
+from pydub import AudioSegment
+import time
+import asyncio
+import aiofiles
+import io
+
+import app.Utils.crud as crud
+from app.Utils.validate_address import validate_address
+from app.Utils.get_geocode_data import get_geocode_data, get_score_by_location_type
+from app.Utils.spokeo import run_scraper
+from app.Utils.send_alert import send_new_alert_phone
+from app.Utils.prompt import get_prompt_for_alert_extraction
+from database import AsyncSessionLocal
 
 load_dotenv()
 
 client = AsyncOpenAI()
 aai.settings.api_key = os.getenv('ASSEMBLY_API_KEY')
 
-config = aai.TranscriptionConfig(speaker_labels=True)
+config = aai.TranscriptionConfig(speaker_labels=True, speech_model=aai.SpeechModel.nano)
 transcriber = aai.Transcriber(config=config)
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -39,17 +46,75 @@ def convert_timestamp_to_datetime(timestamp):
     date_time = datetime.datetime.fromtimestamp(timestamp)  
     return date_time.strftime('%Y-%m-%d %H:%M:%S')
 
-async def ai_translate(audio_file_path):
-    # model = whisper.load_model("medium.en")
-    # print(f"STT for {audio_file_path}")
-    # result = model.transcribe(audio_file_path, fp16=False)
+def format_timestamp(seconds):
+    # Convert seconds to hh:mm:ss.sss format
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
-    # pprint(result)
-    # something not good here
-    # print(audio_file_path)
+async def split_audio(file_path, segment_length_ms=60000):
+    return await asyncio.to_thread(split_audio_sync, file_path, segment_length_ms)
+
+def split_audio_sync(file_path, segment_length_ms=60000):
+    from pydub import AudioSegment
+    audio = AudioSegment.from_file(file_path)
+    segments = []
+    print("file_path---: ", file_path)
+    suffix = file_path.replace('audios\\', '').replace('_p.mp3', '')
+    for i in range(0, len(audio), segment_length_ms):
+        segment = audio[i:i + segment_length_ms]
+        segment_file = f"segment_{i // segment_length_ms}-{suffix}.mp3"
+        segment.export(segment_file, format="mp3")
+        segments.append((segment_file, i // segment_length_ms))  # Return file and its start time in minutes
+    return segments
+
+async def get_transcript_with_whisper(audio_file_path):
+    # Split the audio into 1-minute segments
+    audio_segments = await split_audio(audio_file_path)
+
+    transcript = ""
+    tasks = []
+    for segment_file, segment_index in audio_segments:
+        task = asyncio.create_task(process_segment_with_whisper(segment_file, segment_index))
+        tasks.append(task)
+    # Run transcription tasks concurrently
+    results = await asyncio.gather(*tasks)
+    # Combine transcripts
+    transcript = "\n".join(results)
+    return transcript
+
+async def process_segment_with_whisper(segment_file, segment_index):
+    print("process_segment_with_whisper --- start")
+    segment_start_time = segment_index * 60
+    temp = ""
+    with open(segment_file, 'rb') as audio_file:
+        response = await client.audio.transcriptions.create(
+            file=audio_file,
+            model="whisper-1",
+            response_format="verbose_json",
+            language="en"
+        )
+    if not response.segments:
+        print("No segments found in the transcription.")
+        return ""
+    for segment in response.segments:
+        start_time = segment['start'] + segment_start_time
+        text = segment['text'].strip()
+        timestamp = format_timestamp(start_time)
+        temp += f"[{timestamp}] {text}\n"
+    # Delete the temporary segment file after transcription
+    os.remove(segment_file)
+    print("process_segment_with_whisper --- success")
+    return temp
+
+
+async def get_transcript_with_assembly(audio_file_path):
+    return await asyncio.to_thread(get_transcript_with_assembly_sync, audio_file_path)
+
+def get_transcript_with_assembly_sync(audio_file_path):
+    print("assembly---start")
     transcript = transcriber.transcribe(audio_file_path)
-    # print(transcript.text)
-    # print(transcript.utterances)
 
     if transcript.status == aai.TranscriptStatus.error:
         print(transcript.error)
@@ -58,19 +123,51 @@ async def ai_translate(audio_file_path):
     for utt in transcript.utterances:
         text_with_speaker += f"Speaker {utt.speaker}:\n{utt.text}\n"
 
+    print("text_with_speaker: ", text_with_speaker)
+
+    return text_with_speaker
+
+default_prompt = """
+Now the timestamp and transcript from whisper model is much accurate than from assembly.
+But transcript from assembly ai has diarization.
+So, I'm going to combine these two transcripts to get much more accurate transcript that is diarized.
+The diarization of assembly could be not accurate so if you think it's not accurate, please modify it.
+And even transcript from whisper ai coule be not accurate, so if you think it's not accurate, please modify it.
+
+Provide me cleared, accurate conversation with timestamp and diarization.
+Don't provide anything else that is not included in conversation.
+"""
+
+async def get_clear_conversation(db, whisper_transcript, assembly_transcript):
+    variables = await crud.get_variables(db)
+    prompt = variables.transcript_prompt if variables != None else ""
+
+    if prompt == "":
+        prompt = default_prompt
+
+    # print("prmpt: ", prompt)
     response = await client.chat.completions.create(
         model='gpt-4o',
         max_tokens=4000,
         messages=[
-            {'role': 'system', 'content': """
-                In the given transcript, some talks like 'silence of xx seconds', 'silence of more than 1 minute' are system audio.
-                So that shouldn't be contained in the context.
-                While keeping all context and speaker labels, please remove only that kinds of silence-sentences.
-                Provide structured accurate conversation but don't change the context.
+            {'role': 'system', 'content': f"""
+                {prompt}
+                
+                -----------------------------------
+                This is the transcript of audio got from whisper model.
+
+                {whisper_transcript}
+                -----------------------------------
+                -----------------------------------
+                And this is the transcript of audio got from assembly ai model.
+                
+                {assembly_transcript}
+                -----------------------------------
+
+                
             """},
             {'role': 'user', 'content': f"""
-                Transcript:
-                {text_with_speaker}
+                Provide me only conversation transcript with timestamp and diarization but without anything else like '''plain text, etc, 
             """}
         ],
         seed=2425,
@@ -78,94 +175,35 @@ async def ai_translate(audio_file_path):
     )
     cleared_conversation = response.choices[0].message.content
 
-    return text_with_speaker, cleared_conversation
-
-def add_sub_category(sub_categories, category, text):
-    for sub_category in sub_categories:
-        if sub_category.category == category:
-            text += sub_category.sub_category + '\n'
-    return text + '\n'
+    return cleared_conversation
 
 async def extract_subcategory(db, state, county, scanner_title, context):
     sub_categories = await crud.get_all_subcategories(db)
-
-    category_prompt = '1. Fire Alerts: \n'
-    category_prompt = add_sub_category(sub_categories, "Fire Alerts", category_prompt)
-    
-    category_prompt += '2. Police Dispatcs: \n'
-    category_prompt = add_sub_category(sub_categories, "Police Dispatch", category_prompt)
-    
-    category_prompt += '3. Medical Emergencies: \n'
-    category_prompt = add_sub_category(sub_categories, "Medical Emergencies", category_prompt)
-    
-    
-    category_prompt += '4. Miscellaneous (MISC): \n'
-    category_prompt = add_sub_category(sub_categories, "Miscellaneous (MISC)", category_prompt)
-    
-    # print(category_prompt)
-
-    instruction = f"""
-        Task: Generate a structured notification/report about an event based on an audio transcription containing various types of communication, including scanner communications, police dispatches, calls, and conversations in JSON format.
-
-        Here are the existing sub-categories for each main category:
-
-        {category_prompt}
-
-        Instructions:
-            You are required to categorize each segment of the transcription into one of the following four main categories: Fire Alerts, Police Dispatch, Medical Emergencies, and Miscellaneous (MISC). Each main category must be further broken down into detailed and specific sub-categories.
-
-            Additional Instructions:
-                Review the existing sub-categories and suggest any additional sub-categories that could enhance the specificity and comprehensiveness of each main category.
-                Create new sub-categories if you identify gaps that warrant further classification, ensuring they align closely with the potential alerts in their respective areas.
-                You shouldn't output unknown for sub-category but instead, you need to create new sub-category if you didn't find suitable category in existing examples.
-                Format Output: Structure your output in the following JSON format, ensuring each notification/report is complete:""" +  """
-
-                    {  
-                        "alerts": [
-                            {  
-                                "category": "<Main Category>", // Choose one from the four main categories  
-                                "sub-category": "<Sub-Category>", // Choose from given examples or create your own  
-                                "headline": "<Title of the event occurred>", // Include 'false' in the title if it's a false alarm  
-                                "description": "<Segment of Transcription>", // Provide relevant context  
-                                "incident_Address": "<Address of event occurred>" // Specify the location of the incident. Extract standardized and structured address that contains county, city name.
-                            }  
-                        ]  
-                    }  
-
-    """
-
-    instruction += f"""
-        Note for Incident Addresses: When you extract Incident_Address, please reference the following:
-
-        State Name: {state}
-        County Name: {county}
-        Scanner Title: {scanner_title}
-        Extract and clearly state the formatted street address of the event from the provided text.
-        From above Scanner Title, you can also get important information about city or county name.
-        Don't guess the address but based on above given State, County, City names and the info mentioned in inputted transcript.
-        Make sure the address is as standardized and structured as possible, ideally including street number, street name, city, county, state, and ZIP code. 
-        Don't forget to contain county name and state name.
-    """
-
+    instruction = get_prompt_for_alert_extraction(sub_categories, state, county, scanner_title)
+    # print("instruction: ", instruction)
     response = await client.chat.completions.create(
         model='gpt-4o',
         max_tokens=4000,
         messages=[
             {'role': 'system', 'content': instruction},
             {'role': 'user', 'content': f"""
-                Now, please categorize the following transcription:
+                Now, please categorize the following transcription.
+                When extracting alerts, it's important to group alerts that share the same address.
+                If you encounter multiple alerts associated with the same address, please combine them into a single, consolidated alert.
+                This will ensure accurate and efficient reporting.
+                ---------------------------------------
                 Transcript:
                 {context}
             """}
         ],
-        seed=2425,
+        seed=1123,
         temperature = 0.7,
         response_format={"type": "json_object"}
     )
 
     response_message = response.choices[0].message.content
     json_response = json.loads(response_message)
-    # print("json_response: ", json_response)
+    print("json_response: ", json_response)
     return json_response['alerts']
 
 
@@ -213,9 +251,75 @@ async def get_potential_addresses(state, county, scanner_title, address):
     except Exception as e:
         print(e)
         print("get_potential_addresses--------------")
-   
 
-async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):  
+async def process_archive(db, archive, purchased_scanner_id, state, county, scanner_title):
+    audio_list = await crud.get_audio_by_filename(db, archive['filename'])
+    audio = audio_list[-1] if audio_list else None
+    transcript = ""
+    if audio:
+        print("********************************")
+        print("filename: ", archive['filename'])
+        timestamp = extract_timestamp(archive['filename'])
+        dateTime = convert_timestamp_to_datetime(timestamp)
+        cleared_conversation = await get_clear_conversation(db, audio.context, audio.assembly_transcript)
+        print("origin: ", audio.cleared_context + '\n\n')
+        print("cleared_conversation: ", cleared_conversation)
+        await crud.update_audio(db, audio, archive['filename'], audio.context, audio.assembly_transcript, cleared_conversation, purchased_scanner_id, dateTime)
+        transcript = cleared_conversation
+        print("********************************")
+    else:
+        try:
+            timestamp = extract_timestamp(archive['filename'])
+            dateTime = convert_timestamp_to_datetime(timestamp)
+            whisper_transcript = await get_transcript_with_whisper(archive['filename'])
+            assembly_transcript = await get_transcript_with_assembly(archive['filename'])
+            cleared_conversation = await get_clear_conversation(db, whisper_transcript, assembly_transcript)
+            await crud.insert_audio(db, archive['filename'], whisper_transcript, assembly_transcript, cleared_conversation, purchased_scanner_id, dateTime)
+            print("cleared_conversation: ", cleared_conversation)
+            transcript = cleared_conversation
+        except Exception as e:
+            log.error(f"Failed to translate file {archive['filename']}: {e}")
+            return
+
+    alerts = await extract_subcategory(db, state, county, scanner_title, transcript)
+    print("alerts: ", alerts)
+    if alerts:
+        for event in alerts:
+            print('--------------------------')
+            try:
+                print('event: ', event)
+                timestamp = extract_timestamp(archive['filename'])
+                dateTime = convert_timestamp_to_datetime(timestamp)
+                if "silence" in event['headline'].lower():
+                    print("headline: ", event['headline'])
+                    continue
+                alert = await crud.insert_alert(db, purchased_scanner_id, event, dateTime)
+                await crud.insert_sub_category(db, event['category'], event['sub-category'])
+                if "incident_Address" in event and event['category'] == "Fire Alerts":
+                    formatted_addresses = get_geocode_data(event['incident_Address'])
+                    for result in formatted_addresses:
+                        formatted_address = result.get('formatted_address')
+                        type = validate_address(result)
+                        score = get_score_by_location_type(result.get('geometry').get('location_type'))
+                        if score == 1:
+                            await send_new_alert_phone(alert, db, formatted_address)
+                        contact_info = {}
+                        await crud.insert_validated_address(
+                            db,
+                            formatted_address,
+                            score,
+                            alert.id,
+                            type,
+                            alert.scanner_id,
+                            alert.dateTime,
+                            contact_info,
+                            0
+                        )
+            except Exception as e:
+                print(e)
+            print('++++++++++++++++++++++++++++')
+
+async def stt_archive(db: AsyncSession, purchased_scanner_id, archive):  
 
     # Fetch the scanner by ID  
     scanner = await crud.get_scanner_by_scanner_id(db, purchased_scanner_id)  
@@ -225,57 +329,6 @@ async def stt_archive(db: AsyncSession, purchased_scanner_id, archive_list):
 
     state = scanner.state_name  
     county = scanner.county_name  
-    scanner_title = scanner.scanner_title  
+    scanner_title = scanner.scanner_title
 
-    for archive in archive_list:  
-        audio = await crud.get_audio_by_filename(db, archive['filename'])  
-        transcript = ""  
-        if audio and audio.context:  
-            transcript = audio.context
-            continue
-        else:  
-            try:  
-                transcript, cleared_conversation = await ai_translate(archive['filename'])
-                print("transcript: ", transcript)
-                print("cleared_conversation: ", cleared_conversation)
-                timestamp = extract_timestamp(archive['filename'])  
-                dateTime = convert_timestamp_to_datetime(timestamp)  
-                await crud.insert_audio(db, archive['filename'], transcript, cleared_conversation, purchased_scanner_id, dateTime)  
-            except Exception as e:  
-                log.error(f"Failed to translate file {archive['filename']}: {e}")  
-                continue
-    
-        alerts = await extract_subcategory(db, state, county, scanner_title, transcript)
-        print("alerts: ", alerts)
-        if alerts:
-            for event in alerts:
-                print('--------------------------')
-                try:
-                    print('event: ', event)
-                    timestamp = extract_timestamp(archive['filename'])  
-                    dateTime = convert_timestamp_to_datetime(timestamp)
-                    alert = await crud.insert_alert(db, purchased_scanner_id, event, dateTime)
-                    await crud.insert_sub_category(db, event['category'], event['sub-category'])
-
-                    if "incident_Address" in event:
-                        # addresses = await get_potential_addresses(state, county, scanner_title, event['incident_Address'])
-                        # results = validate_address(event['incident_Address'])
-                        formatted_addresses = get_geocode_data(event['incident_Address'])
-                        for result in formatted_addresses:
-                            formatted_address = result.get('formatted_address')
-                            score = get_score_by_location_type(result.get('geometry').get('location_type'))
-                            contact_info = {}
-                            if score == 1:
-                                contact_info = await run_scraper(formatted_address)
-                                print("contact_info: ", contact_info)
-                            await crud.insert_validated_address(
-                                db,
-                                formatted_address,
-                                score,
-                                alert.id,
-                                contact_info
-                            )
-                except Exception as e:
-                    print(e)
-                    
-                print('++++++++++++++++++++++++++++')
+    await process_archive(db, archive, purchased_scanner_id, state, county, scanner_title)

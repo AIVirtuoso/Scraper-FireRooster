@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.Routers import Download, Spokeo
 
 import uvicorn
-
+import asyncio
 app = FastAPI()
 
 origins = ["*"]
@@ -23,8 +23,6 @@ app.mount("/audios", StaticFiles(directory="audios"), name="audios")
 app.include_router(Download.router, prefix="/api/v1")
 app.include_router(Spokeo.router, prefix="/api/v1")
 
-
-
 @app.get("/check_db_connection")  
 async def check_db_connection():
     from database import check_db_connection
@@ -35,4 +33,5 @@ async def health_checker():
     return {"status": "success-download"}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=7000, reload=True)
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

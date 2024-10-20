@@ -33,9 +33,12 @@ class Audio(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     file_name = Column(String)
     context = Column(String)
+    assembly_transcript=Column(String)
     cleared_context = Column(String)
     scanner_id = Column(Integer)
     dateTime = Column(DateTime)
+
+    
 
 class Scanner(Base):
     __tablename__ = "scanner_table"
@@ -65,17 +68,39 @@ class Alert(Base):
     address = Column(String)
     scanner_id = Column(Integer)
     dateTime = Column(DateTime)
-    
+    is_visited = Column(Integer)
+    rating = Column(Integer)
+    rating_title = Column(String)
+    rating_criteria = Column(String)
+    ten_codes = Column(String)
+    thumb = Column(Integer)
+    feedback = Column(JSON)
+    response_origin_address = Column(String)
+    response_origin_radius = Column(String)
+
+
 class Address(Base):
     __tablename__ = "address_table"
     id = Column(Integer, primary_key=True, autoincrement=True)
     address = Column(String)
     score = Column(Float)
     alert_id = Column(Integer)
+    type = Column(String)
+    scanner_id = Column(Integer)
+    dateTime = Column(DateTime)
     contact_info = Column(JSON)
+    spokeo_status = Column(Integer)
 
 class Category(Base):
     __tablename__ = "category_table"
     id = Column(Integer, primary_key=True, autoincrement=True)
     category = Column(String)
     sub_category = Column(String)
+
+    
+class Variables(Base):
+    __tablename__ = "variables_table"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prompt = Column(String)
+    transcript_prompt = Column(String)
+    scraper_status = Column(Integer)

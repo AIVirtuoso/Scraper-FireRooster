@@ -59,7 +59,7 @@ class WebScraper:
     
 ##############BuilderTrend################
     # Scrape the buildertrend website
-    async def scrape_buildertrend_website(self, url, address):
+    async def scrape_website(self, url, address):
         encoded_address = address.replace(' ', '+')
         encoded_address = address.replace(', USA', '')
         
@@ -187,8 +187,7 @@ class WebScraper:
 async def run_scraper(address):
     scraper = WebScraper()
     print("address: ", address)
-    contact_info = await scraper.scrape_buildertrend_website("https://www.spokeo.com/login", address)
-    # print("contact_info: ", contact_info)
+    contact_info = await scraper.scrape_website("https://www.spokeo.com/login", address)
     time.sleep(2)
     scraper.close_driver()
 

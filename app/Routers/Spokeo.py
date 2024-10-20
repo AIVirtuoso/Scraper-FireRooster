@@ -14,5 +14,13 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session 
 
 @router.get('/verify-address')
-async def verify_address_router(address:str, db: AsyncSession = Depends(get_db)):
-    await run_scraper(address)
+async def verify_address_router(address_id:str, db: AsyncSession = Depends(get_db)):
+    address = await crud.get_address_by_id(db, address_id)
+
+    try:
+        contact_info = await run_scraper(address.address)
+        await crud.update_address(db, address_id, contact_info)
+        return True
+    except Exception as e:
+        print(e)
+        return False

@@ -1,8 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, func  
+from datetime import datetime
 
-from schema import Audio, PurchasedScanner, Alert, Address, Scanner, Category
+from schema import Audio, PurchasedScanner, Alert, Address, Scanner, Category, Variables
 
 async def get_all_audios(db:AsyncSession):
     stmt = select(Audio)  
@@ -12,7 +13,7 @@ async def get_all_audios(db:AsyncSession):
 async def get_audio_by_filename(db: AsyncSession, filename):
     stmt = select(Audio).filter(Audio.file_name == filename)
     result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+    return result.scalars().all()
 
 async def add_object_and_commit(db: AsyncSession, obj):  
     try:  
@@ -58,23 +59,49 @@ async def remove_duplicate_audios_by_filename(db:AsyncSession):
     return "Duplicates removed successfully"
 
 
-async def insert_audio(db: AsyncSession, audio, context, cleared_conversation, scanner_id, dateTime):
+async def insert_audio(db: AsyncSession, audio, context, assembly_transcript, cleared_conversation, scanner_id, dateTime):
     stmt = select(Audio).filter(Audio.file_name == audio)
     result = await db.execute(stmt)
     data = result.scalar_one_or_none()
     print(data)
     if not data:
-        new_audio = Audio(file_name=audio, context=context, cleared_context=cleared_conversation, scanner_id=scanner_id, dateTime=dateTime)
+        new_audio = Audio(file_name=audio, context=context, assembly_transcript=assembly_transcript, cleared_context=cleared_conversation, scanner_id=scanner_id, dateTime=dateTime)
         db.add(new_audio)
         await db.flush()  # ensure flush and obtain primary key value  
         await db.commit()
         await db.refresh(new_audio)
         return new_audio
+
+async def update_audio(db: AsyncSession, audio, file_name, context, assembly_transcript, cleared_conversation, scanner_id, dateTime):
+    audio.file_name = file_name
+    audio.context = context
+    audio.assembly_transcript = assembly_transcript
+    audio.cleared_context = cleared_conversation
+    audio.scanner_id = scanner_id
+    audio.dateTime = dateTime
+    await db.commit()
+    await db.refresh(audio)
+    print(audio)
         
 async def insert_alert(db: AsyncSession, purchased_scanner_id, event, dateTime):
     print("dateTime: ", dateTime)
-    new_alert = Alert(category=event['category'], sub_category=event['sub-category'], headline=event['headline'], description=event['description'], address=event['incident_Address'], scanner_id=purchased_scanner_id, dateTime=dateTime)
-    return await add_object_and_commit(db, new_alert)
+    new_alert = Alert(
+        category=event['category'],
+        sub_category=event['sub-category'],
+        headline=event['headline'],
+        description=event['description'],
+        address=event['incident_Address'],
+        scanner_id=purchased_scanner_id,
+        dateTime=dateTime,
+        is_visited=0,
+        rating = int(event['rating']),
+        rating_title = event['rating_title'],
+        rating_criteria = event['rating_criteria'],
+        ten_codes = event['10-codes'],
+        response_origin_address = event['response_origin_address'],
+        response_origin_radius = event['response_origin_radius']
+    )
+    # return await add_object_and_commit(db, new_alert)
     db.add(new_alert)
     print('new_alert: ', new_alert)
     await db.commit()
@@ -106,8 +133,8 @@ async def get_all_purchased_scanners(db: AsyncSession):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-async def insert_validated_address(db: AsyncSession, address, score, alert_id, contact_info):
-    new_address = Address(address=address, score=score, alert_id=alert_id, contact_info=contact_info)
+async def insert_validated_address(db: AsyncSession, address, score, alert_id, type, scanner_id, dateTime, contact_info, spokeo_status):
+    new_address = Address(address=address, score=score, alert_id=alert_id, type=type, scanner_id=scanner_id, dateTime=dateTime, contact_info=contact_info, spokeo_status=spokeo_status)
     db.add(new_address)
     await db.commit()  
     await db.refresh(new_address)
@@ -123,4 +150,39 @@ async def get_all_subcategories(db: AsyncSession):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-    
+async def get_address_by_id(db: AsyncSession, id):
+    stmt = select(Address).filter(Address.id == id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+async def update_address(db: AsyncSession, id, contact_info):
+    stmt = select(Address).filter(Address.id == id)
+    result = await db.execute(stmt)
+    result = result.scalar_one_or_none()
+    result.contact_info = contact_info
+    result.spokeo_status = 1
+    await db.commit()
+    await db.refresh(result)
+
+
+
+####################################
+async def filter_alerts(db: AsyncSession):
+    # Define the date threshold (October 3rd of the current year)
+    date_threshold = datetime(datetime.now().year, 10, 11)
+
+    # Create a statement to select audios where dateTime is later than October 3rd
+    stmt = select(Audio).filter(Audio.dateTime > date_threshold)
+
+    # Execute the statement
+    result = await db.execute(stmt)
+
+    # Fetch all results
+    audios = result.scalars().all()
+
+    return audios
+
+async def get_variables(db: AsyncSession):
+    query = select(Variables)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
